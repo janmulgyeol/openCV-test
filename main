@@ -1,0 +1,84 @@
+import cv2
+import numpy as np
+
+# LAB 색 공간에서 L 채널을 정규화하는 함수
+def lab_equalizer(img, new_channel):
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)  # BGR 이미지를 LAB 색 공간으로 변환
+    l, a, b = cv2.split(lab)  # LAB 채널 분리
+    merged_lab = cv2.merge((new_channel, a, b))  # 새로운 L 채널과 원래 A, B 채널을 병합
+    bgr_img = cv2.cvtColor(merged_lab, cv2.COLOR_LAB2BGR)  # LAB을 다시 BGR로 변환
+    return bgr_img
+
+# 주어진 윤곽선이 평행사변형인지 확인하는 함수
+def is_parallelogram(approx):
+    if len(approx) == 4:  # 꼭짓점이 4개일 경우
+        side_lengths = [np.linalg.norm(approx[i] - approx[(i + 1) % 4]) for i in range(4)]  # 변의 길이 계산
+        ratio_1 = side_lengths[0] / side_lengths[2]  # 대각선 비율
+        ratio_2 = side_lengths[1] / side_lengths[3]  # 대각선 비율
+        return 0.8 <= ratio_1 <= 1.2 and 0.8 <= ratio_2 <= 1.2  # 비율이 비슷한지 확인
+    return False
+
+cap = cv2.VideoCapture(0)  # 웹캠에서 비디오 캡처 시작
+
+# 카메라 해상도 설정
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+while True:
+    ret, image = cap.read()  # 프레임 읽기
+    if not ret:
+        break
+
+    image = cv2.flip(image, 1)  # 이미지 좌우 반전
+    image_copy = image.copy()  # 이미지 복사
+
+    gray = cv2.cvtColor(image_copy, cv2.COLOR_BGR2GRAY)  # 이미지를 그레이스케일로 변환
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)  # 가우시안 블러 적용
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))  # CLAHE 객체 생성
+    clahe_applied_perceived_channel = clahe.apply(gray)  # CLAHE 적용
+    lab_equalized_img = lab_equalizer(image_copy, clahe_applied_perceived_channel)  # LAB 정규화
+
+    # 이진화 이미지 생성
+    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 15, 10)
+
+    kernel = np.ones((3, 3), np.uint8)  # 커널 생성
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)  # 모폴로지 닫힘 연산
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)   # 모폴로지 열림 연산
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)  # 윤곽선 찾기
+
+    for contour in contours:
+        area = cv2.contourArea(contour)  # 윤곽선 면적 계산
+
+        if area > 100:  # 면적이 100보다 클 경우
+            epsilon = 0.02 * cv2.arcLength(contour, True)  # 윤곽선 근사화 정도
+            approx = cv2.approxPolyDP(contour, epsilon, True)  # 윤곽선 근사화
+
+            if is_parallelogram(approx):  # 평행사변형인지 확인
+                cv2.drawContours(image_copy, [approx], 0, (0, 255, 0), 3)  # 윤곽선 그리기
+
+                M = cv2.moments(contour)  # 윤곽선의 모멘트 계산
+                if M["m00"] != 0:  # 면적이 0이 아닐 경우
+                    cX = int(M["m10"] / M["m00"])  # 중심 X 좌표
+                    cY = int(M["m01"] / M["m00"])  # 중심 Y 좌표
+                    
+                    # 중심 좌표를 (320, 240)을 기준으로 조정
+                    adjusted_cX = cX - 320
+                    adjusted_cY = 240 - cY
+                    
+                    cv2.circle(image_copy, (cX, cY), 5, (0, 0, 255), -1)  # 중심점 그리기
+                    cv2.putText(image_copy, f'({adjusted_cX}, {adjusted_cY})', (cX + 10, cY),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)  # 중심 좌표 텍스트 표시
+                    
+                    print(f'({adjusted_cX}, {adjusted_cY})')
+
+    cv2.imshow('Binary', binary)  # 이진 이미지 창 표시
+    cv2.imshow('Result', image_copy)  # 결과 이미지 창 표시
+
+    if cv2.waitKey(1) == 27:  # ESC 키로 종료
+        break
+
+cap.release()  # 비디오 캡처 해제
+cv2.destroyAllWindows()  # 모든 창 닫기
